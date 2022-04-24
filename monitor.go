@@ -3,6 +3,7 @@ package main
 import (
         "context"
         "fmt"
+		"os"
         "sync"
 		"flag"
 		"log"
@@ -23,6 +24,7 @@ var (
 	accessTokenPtr *string
     projectPtr *string
 	logDirPtr *string
+	publishPathPtr *string
  
     mu sync.Mutex
 	counter int = 1
@@ -57,13 +59,10 @@ func obtain_pubsub_client() (*pubsub.Client, error) {
 	return pubsub_client, nil
 }
 
-func watch_topic(topic_name string) {
+func watch_topic(topic_name string, topic *pubsub.Topic) {
 	pubsub_client, err := obtain_pubsub_client()
-	
-	log.Printf("Subscribing to topic %s", topic_name)
-	topic:= pubsub_client.Topic(topic_name)
-	if topic == nil {
-		log.Fatalf("Topic %s not found", topic_name)
+	if err != nil {
+		log.Fatalf("Error while obtaining pubsub client: %s", err)
 	}
 	
 	subscription_name := DEFAULT_SUBSCRIPTION_NAME+"--"+topic_name
@@ -135,8 +134,38 @@ func pullMsgs(topics []string) error {
 			log.Printf("%d topics found", len(topics))
 		}
 		
+		ctx := context.Background()
+		
+		var publish_msg []byte
+		if *publishPathPtr != "" {
+			publish_msg, err = ioutil.ReadFile(*publishPathPtr)
+			if err != nil {
+				log.Fatal(err)
+			}
+		}
+		
 		for _, topic_name:= range topics {
-			go watch_topic(topic_name)
+			log.Printf("Subscribing to topic %s", topic_name)
+			topic:= pubsub_client.Topic(topic_name)
+			if topic == nil {
+				log.Fatalf("Topic %s not found", topic_name)
+			}
+
+		    if *publishPathPtr != "" {
+			    log.Printf("Publishing message to topic: %s", topic_name)
+				res := topic.Publish(ctx, &pubsub.Message{Data: publish_msg})
+				_, err := res.Get(ctx)
+				if err != nil {
+					log.Fatalf("Error while publishing message to topic %s: %s", topic_name, err)
+				}
+			} else {
+				go watch_topic(topic_name, topic)
+			}
+		}
+		
+		if *publishPathPtr != "" {
+		   log.Printf("Publishing complete")
+		   os.Exit(0)
 		}
 		
 		log.Printf("Subscriptions complete, receiving messages for all topics")
@@ -149,13 +178,14 @@ func main() {
    accessTokenPtr = flag.String("access-token", "", "access token to use $(curl --silent http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token -H Metadata-Flavor:Google | jq -r .access_token) or $(gcloud auth print-access-token)")
    projectPtr = flag.String("project", "", "project to inspect")
    logDirPtr = flag.String("log-dir", "", "directory to save the messages to")
+   publishPathPtr = flag.String("publish-msg-path", "", "publishes the content of the specified file to the topics")
    
    flag.Parse()
    
    if *projectPtr == "" {
 	  log.Fatal("Error: you must provide the project ID")
    }
-   if *logDirPtr == "" {
+   if *publishPathPtr == "" && *logDirPtr == "" {
 	  log.Fatal("Error: you must specify the logdir")
    }
    
